@@ -1,0 +1,145 @@
+diff --git a/ViVe/ViVe.sdk.csproj b/ViVe/ViVe.sdk.csproj
+new file mode 100644
+index 0000000..f52e08f
+--- /dev/null
++++ b/ViVe/ViVe.sdk.csproj
+@@ -0,0 +1,18 @@
++<Project Sdk="Microsoft.NET.Sdk">
++  <PropertyGroup>
++    <TargetFramework>net481</TargetFramework>
++    <OutputType>Library</OutputType>
++    <RootNamespace>Albacore.ViVe</RootNamespace>
++    <AssemblyName>Albacore.ViVe</AssemblyName>
++    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
++    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
++    <LangVersion>7.3</LangVersion>
++    <Deterministic>true</Deterministic>
++    <Nullable>disable</Nullable>
++    <ImplicitUsings>disable</ImplicitUsings>
++    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
++  </PropertyGroup>
++  <ItemGroup>
++    <Compile Include="*.cs;Properties\*.cs" />
++  </ItemGroup>
++</Project>
+diff --git a/ViVeTool/FeatureNaming.cs b/ViVeTool/FeatureNaming.cs
+index 6a79f1c..b60ba49 100644
+--- a/ViVeTool/FeatureNaming.cs
++++ b/ViVeTool/FeatureNaming.cs
+@@ -26,13 +26,34 @@ namespace Albacore.ViVeTool
+     {
+         internal const string DictFileName = "FeatureDictionary.pfs";
+         internal static string DictFilePath = Path.Combine(Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location), DictFileName);
++        internal const string EmbeddedDictResourceName = "FeatureDictionary.pfs.gz";
++
++        // A FeatureDictionary.pfs next to the exe (e.g. from /dictupdate) takes precedence;
++        // otherwise fall back to the gzip-compressed copy embedded in the exe.
++        private static StreamReader OpenDictionary()
++        {
++            if (File.Exists(DictFilePath))
++                return new StreamReader(File.OpenRead(DictFilePath));
++            var embedded = OpenEmbeddedDictionary();
++            return embedded == null ? null : new StreamReader(embedded);
++        }
++
++        internal static Stream OpenEmbeddedDictionary()
++        {
++            var res = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream(EmbeddedDictResourceName);
++            if (res == null)
++                return null;
++            return new System.IO.Compression.GZipStream(res, System.IO.Compression.CompressionMode.Decompress);
++        }
++
+         internal static List<uint> FindIdsForNames(IEnumerable<string> featureNames)
+         {
+-            if (!File.Exists(DictFilePath))
++            var dict = OpenDictionary();
++            if (dict == null)
+                 return null;
+             var result = new List<uint>();
+             var namesCommas = featureNames.Select(x => x.ToLowerInvariant() + ",").ToList();
+-            using (StreamReader reader = new StreamReader(File.OpenRead(DictFilePath)))
++            using (StreamReader reader = dict)
+             {
+                 while (!reader.EndOfStream)
+                 {
+@@ -56,10 +77,11 @@ namespace Albacore.ViVeTool
+         internal static Dictionary<uint, string> FindNamesForFeatures(IEnumerable<uint> featureIDs)
+         {
+             var result = new Dictionary<uint, string>();
+-            if (!File.Exists(DictFilePath))
++            var dict = OpenDictionary();
++            if (dict == null)
+                 return null;
+             var idsCommas = featureIDs.Select(x => "," + x.ToString()).ToList();
+-            using (StreamReader reader = new StreamReader(File.OpenRead(DictFilePath)))
++            using (StreamReader reader = dict)
+             {
+                 while (!reader.EndOfStream)
+                 {
+diff --git a/ViVeTool/UpdateCheck.cs b/ViVeTool/UpdateCheck.cs
+index e688213..d73afe4 100644
+--- a/ViVeTool/UpdateCheck.cs
++++ b/ViVeTool/UpdateCheck.cs
+@@ -52,7 +52,22 @@ namespace Albacore.ViVeTool
+ 
+         internal static bool IsDictOutdated(string sha)
+         {
+-            return sha != HashUTF8TextFile(FeatureNaming.DictFilePath);
++            if (File.Exists(FeatureNaming.DictFilePath))
++                return sha != HashUTF8TextFile(FeatureNaming.DictFilePath);
++            // No external dictionary: compare against the copy embedded in the exe
++            using (var embedded = FeatureNaming.OpenEmbeddedDictionary())
++            {
++                if (embedded == null)
++                    return true;
++                var tmp = Path.GetTempFileName();
++                try
++                {
++                    using (var fs = File.Create(tmp))
++                        embedded.CopyTo(fs);
++                    return sha != HashUTF8TextFile(tmp);
++                }
++                finally { File.Delete(tmp); }
++            }
+         }
+ 
+         internal static void ReplaceDict(string url)
+diff --git a/ViVeTool/ViVeTool.sdk.csproj b/ViVeTool/ViVeTool.sdk.csproj
+new file mode 100644
+index 0000000..b708c78
+--- /dev/null
++++ b/ViVeTool/ViVeTool.sdk.csproj
+@@ -0,0 +1,32 @@
++<Project Sdk="Microsoft.NET.Sdk">
++  <PropertyGroup>
++    <TargetFramework>net481</TargetFramework>
++    <OutputType>Exe</OutputType>
++    <RootNamespace>Albacore.ViVeTool</RootNamespace>
++    <AssemblyName>ViVeTool</AssemblyName>
++    <ApplicationManifest>app.manifest</ApplicationManifest>
++    <PlatformTarget>AnyCPU</PlatformTarget>
++    <Prefer32Bit>false</Prefer32Bit>
++    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
++    <LangVersion>7.3</LangVersion>
++    <Deterministic>true</Deterministic>
++    <Nullable>disable</Nullable>
++    <ImplicitUsings>disable</ImplicitUsings>
++    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
++    <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
++    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
++  </PropertyGroup>
++  <ItemGroup>
++    <Compile Include="*.cs;Properties\*.cs" />
++    <EmbeddedResource Include="Properties\Resources.resx" />
++    <EmbeddedResource Include="$(IntermediateOutputPath)FeatureDictionary.pfs.gz" LogicalName="FeatureDictionary.pfs.gz" />
++    <Reference Include="System.Net.Http" />
++    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
++    <ProjectReference Include="..\ViVe\ViVe.sdk.csproj" />
++  </ItemGroup>
++  <!-- gzip the feature dictionary so it can be embedded compactly -->
++  <Target Name="GzipDictionary" BeforeTargets="PrepareForBuild">
++    <MakeDir Directories="$(IntermediateOutputPath)" />
++    <Exec Command="powershell -NoProfile -Command &quot;$i=[IO.File]::OpenRead('$(MSBuildProjectDirectory)\..\Extra\FeatureDictionary.pfs'); $o=[IO.File]::Create('$(MSBuildProjectDirectory)\$(IntermediateOutputPath)FeatureDictionary.pfs.gz'); $g=New-Object IO.Compression.GZipStream($o,[IO.Compression.CompressionLevel]::Optimal); $i.CopyTo($g); $g.Dispose(); $o.Dispose(); $i.Dispose()&quot;" />
++  </Target>
++</Project>
